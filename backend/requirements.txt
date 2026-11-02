@@ -10,3 +10,5 @@ google-auth[requests]==2.61.0
 google-auth-oauthlib==1.5.0
 google-api-python-client==2.201.0
 requests>=2.32,<3.0
+gunicorn>=23,<24
+honcho>=1.1,<2

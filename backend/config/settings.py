@@ -11,8 +11,8 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
-from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
+from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -65,10 +65,16 @@ MONITOR_DEMO_ENABLED = os.environ.get("MONITOR_DEMO_ENABLED", str(DEBUG)).strip(
 ALLOWED_HOSTS = list(dict.fromkeys([
     "localhost",
     "127.0.0.1",
+    os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip(),
     *_csv_env("DJANGO_ALLOWED_HOSTS"),
 ]))
+ALLOWED_HOSTS = [host for host in ALLOWED_HOSTS if host]
 
-CSRF_TRUSTED_ORIGINS = _csv_env("CSRF_TRUSTED_ORIGINS_EXTRA")
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+    *_csv_env("CSRF_TRUSTED_ORIGINS_EXTRA"),
+    *([f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}"] if os.environ.get("RENDER_EXTERNAL_HOSTNAME") else []),
+]))
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 
 # Application definition
@@ -137,6 +143,11 @@ DATABASES = {
         "PASSWORD": os.environ.get("DB_PASSWORD", ""),
         "HOST": os.environ.get("DB_HOST", ""),
         "PORT": os.environ.get("DB_PORT", ""),
+        **(
+            {"OPTIONS": {"timeout": int(os.environ.get("SQLITE_TIMEOUT", "30"))}}
+            if DB_ENGINE == "django.db.backends.sqlite3"
+            else {}
+        ),
     }
 }
 
@@ -247,9 +258,12 @@ CORS_ALLOWED_ORIGINS = [
     *_csv_env("CORS_ALLOWED_ORIGINS_EXTRA"),
 ]
 
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
 
-CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0"
+CELERY_RESULT_BACKEND = os.environ.get(
+    "CELERY_RESULT_BACKEND",
+    CELERY_BROKER_URL,
+)
 
 CELERY_ACCEPT_CONTENT = ["json"]
 
