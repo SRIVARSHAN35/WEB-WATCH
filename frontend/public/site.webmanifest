@@ -1,0 +1,25 @@
+{
+  "name": "WebWatch",
+  "short_name": "WebWatch",
+  "description": "Monitor today. Stay ahead.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f5fa",
+  "theme_color": "#6558e8",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any",
+      "media": "(prefers-color-scheme: light)"
+    },
+    {
+      "src": "./webwatch-icon-dark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any",
+      "media": "(prefers-color-scheme: dark)"
+    }
+  ]
+}

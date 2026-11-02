@@ -1,0 +1,42 @@
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+**/credentials.json
+**/client_secret*.json
+**/gmail_token.json
+**/*.pem
+**/*.key
+
+# Python and Django
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.sqlite3-journal
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+venv*/
+backend/celerybeat-schedule*
+media/
+
+# Node and Vite
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Local editor and operating system files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

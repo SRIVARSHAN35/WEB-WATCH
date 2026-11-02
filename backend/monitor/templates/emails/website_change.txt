@@ -1,0 +1,24 @@
+WebWatch — Monitor today. Stay ahead.
+
+Website Change Detected!
+
+One of your monitored websites has been updated. Here are the details.
+
+Website: {{ website_name }}
+Website URL: {{ website_url_display }}
+Current status: {{ website_status }}
+Last checked: {{ last_checked }}
+Check interval: {{ check_interval }}
+Change detected: {{ detected_at }}
+
+What changed?
+The monitored page differs from its previous successful check. Page contents are not included in this email.
+{% if website_url %}
+View Website: {{ website_url }}
+{% endif %}{% if dashboard_url %}
+WebWatch dashboard: {{ dashboard_url }}
+{% endif %}
+This is an automated website-monitoring notification.
+
+WebWatch
+Monitor today. Stay ahead.
