@@ -1,35 +1,104 @@
-# Deploy WebWatch on Render
+# Render deployment guide
 
-The root `render.yaml` defines a React static site, a Django API service, and a Render Key Value instance for Celery. The Django service runs Gunicorn and the Celery worker/beat process together so they use the same SQLite file on the attached persistent disk.
+WebWatch uses one Render web service and one public domain for the React/Vite frontend and Django/DRF API. The root build creates `frontend/dist`; Django serves the SPA and API, and WhiteNoise serves collected static assets. This guide describes the current single-service, free-tier setup. It is suitable for a staging/hobby deployment, not a guarantee of uninterrupted production monitoring.
 
-## Database and persistence
+## Render service
 
-- The deployed app uses a new SQLite database at `/var/data/db.sqlite3`.
-- Render mounts a persistent disk at `/var/data`; the API service uses a paid Starter plan because Render does not attach persistent disks to free web services.
-- The database starts empty. The local `.env`, MySQL database, and `db.sqlite3` are not included in Git or copied to Render. Do not point a public service at a local-only database. If existing user and monitor records need to be transferred, export and import them as a separate, reviewed step.
-- SQLite is suitable for a small single-instance deployment. Do not scale this service to multiple instances. For sustained concurrent monitoring, move to a managed database with multi-process support.
-- The free Key Value queue is in-memory and can lose queued jobs after a restart. Periodic Celery Beat schedules will enqueue subsequent checks again; use a paid persistent Key Value plan if queued tasks must survive restarts.
+Create a Blueprint from `SRIVARSHAN35/WEB-WATCH`, branch `main`. `render.yaml` defines one Python web service named `webwatch`, using the Free plan in Singapore. It does not declare a persistent disk. Free web services have an ephemeral filesystem, so database files, Beat schedule files, and other runtime writes must not be treated as durable. Use the external MySQL-compatible database for application data and Redis for Celery queues.
 
-## Create the Render services
+The build runs from the repository root:
 
-1. In the Render Dashboard, choose **New > Blueprint** and connect `SRIVARSHAN35/webwatchapp` on branch `main`.
-2. Review the services and plan before deploying. The API's Starter service and 1 GB persistent disk are paid; the static site and free Key Value service are separate resources.
-3. Deploy the Blueprint. The API service applies Django migrations on startup, then starts the web server and Celery worker/beat.
-4. The Blueprint expects these generated service URLs. If Render assigns a different hostname, update `CORS_ALLOWED_ORIGINS_EXTRA` on the API and `VITE_API_BASE_URL` on the static site, then redeploy the static site:
-   - Frontend: `https://webwatch-monitoring-ui.onrender.com`
-   - API: `https://webwatch-monitoring-api.onrender.com/api`
+```sh
+npm --prefix frontend ci
+VITE_GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" npm --prefix frontend run build
+pip install -r backend/requirements.txt
+python -m playwright install --with-deps chromium
+python backend/manage.py collectstatic --noinput
+```
 
-## Set secrets and OAuth
+Render native runtimes provide Node/npm. Python is pinned to 3.12.10 in both `.python-version` and `render.yaml`; `backend/requirements.txt` records the intended Python and MySQL targets. Playwright installs the matching Chromium binary and its Linux system dependencies at build time.
 
-The Blueprint generates `SECRET_KEY` and `WEBSITE_CREDENTIAL_ENCRYPTION_KEY`. Enter the following in Render's Environment settings; keep their values out of Git and chat:
+Chromium launch configuration keeps `--disable-dev-shm-usage` for containers with small shared-memory mounts and adds `--no-sandbox` only when the process is root (where Chromium otherwise refuses to start). The previous `--single-process` and `--disable-gpu` flags are removed. Root-mode `--no-sandbox` reduces browser isolation; verify the Render runtime user and public/authenticated browser flows during staging.
 
-- `GOOGLE_CLIENT_ID` on the API and `VITE_GOOGLE_CLIENT_ID` on the static site. They must contain the same Web OAuth client ID.
-- In Google Cloud Console, add `https://webwatch-monitoring-ui.onrender.com` as an Authorized JavaScript origin. The current GIS callback flow does not need an Authorized redirect URI. If the consent screen is in Testing, add the Google accounts that need to sign in as test users.
-- To enable email alerts, configure `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, and `DEFAULT_FROM_EMAIL` on the API service. Do not use these settings to set the notification recipient; recipients come from the WebWatch account.
-- WhatsApp remains disabled unless you set the WhatsApp Cloud API values and explicitly set `WHATSAPP_ENABLED=True` on the API.
+At start, `backend/start_render.sh` runs Django system checks and `migrate --check`, then starts the Procfile with Honcho. It does **not** apply migrations. If migration state is behind, the check fails before serving requests; apply a reviewed migration through the explicit procedure below, then restart/redeploy.
 
-The API health check is `https://webwatch-monitoring-api.onrender.com/healthz/`. It checks that Django can connect to the deployed database.
+## Processes and monitoring behavior
 
-## Runtime notes
+The Procfile starts three supervised processes in the same web-service container:
 
-The browser monitor installs Chromium during the API build. If Playwright processes exceed the selected service's memory, increase the API service plan in Render. Keep the service to one instance while SQLite is in use.
+- `web`: Gunicorn, one worker and four threads.
+- `worker`: one Celery worker process with concurrency one and prefetch one. Website checks and notification tasks run here.
+- `beat`: the separate Celery scheduler. Existing website-check and notification-retry schedules remain one minute apart.
+
+Honcho prefixes child-process logs and exits when the process group fails. Inspect Render logs for all three process names. They share the web service's CPU and memory, and Chromium checks can be resource intensive. This layout is a low-cost compromise, not isolated worker capacity or high availability.
+
+Render Free web services sleep after 15 minutes without inbound HTTP/WebSocket traffic, take about a minute to start on a later request, can be restarted by Render, and have ephemeral filesystems. When the web service sleeps, the colocated Celery worker and Beat stop too. The free allocation is 750 instance hours per workspace per month; exhausting it suspends free web services until the next month. A regular keepalive can keep this one service running and consume that monthly allocation. Free services are not recommended by Render for production applications. See [Render's free service limitations](https://render.com/docs/free).
+
+An external cron/uptime request may reduce idle spin-down while it is arriving regularly, but does **not** guarantee continuous monitoring. Schedulers can be delayed or unavailable, and pings cannot prevent service restarts, monthly-hour exhaustion, resource failures, Redis/database outages, or a failed Celery process. `/healthz/` checks database connectivity only; it does not verify worker or Beat health. Do not describe this free-tier arrangement as continuous or 24/7 monitoring.
+
+For reliable continuous monitoring, move the worker and Beat to independently managed always-on services and use an availability plan that does not sleep. Render background workers currently have no free compute plan, so that architecture does not meet a ₹0/month budget on Render. Free-tier quotas or terms from external database and Redis providers can also change.
+
+## Required environment variables
+
+`render.yaml` declares these variables. Keep credentials in Render's environment settings or secret files, never in Git:
+
+| Variable | Purpose |
+| --- | --- |
+| `PYTHON_VERSION` | Pinned Render runtime: `3.12.10`. |
+| `SECRET_KEY` | Django signing key; generated by the Blueprint. Keep stable between deploys. |
+| `WEBSITE_CREDENTIAL_ENCRYPTION_KEY` | Fernet key for saved website credentials/session data; generated by the Blueprint. Back it up securely and do not rotate without a data re-encryption plan. |
+| `DEBUG` | Set to `False` in production/staging. |
+| `MONITOR_DEMO_ENABLED` | Set to `False` unless demo mode is intentionally enabled. |
+| `DB_ENGINE` | `django.db.backends.mysql`. |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Credentials and endpoint for the external MySQL-compatible database. Use port `3306` unless the provider specifies another. |
+| `DB_SSL_MODE` | MySQL TLS policy. Blueprint defaults to `VERIFY_IDENTITY`; use a mode supported by the provider and driver. |
+| `DB_CONNECT_TIMEOUT` | MySQL connection timeout in seconds; Blueprint default is `10`. |
+| `DB_SSL_CA` | Optional path to a provider CA PEM file, supplied as a Render secret file when needed. |
+| `DB_SSL_CERT`, `DB_SSL_KEY` | Optional paired client certificate/key paths for providers requiring mutual TLS. Never place PEM contents in source control. |
+| `CELERY_BROKER_URL` | Redis broker URL, normally `rediss://` when the provider requires TLS. |
+| `CELERY_RESULT_BACKEND` | Redis result backend URL; may be the same URL if provider configuration permits. |
+| `GOOGLE_CLIENT_ID` | Google Identity web client ID. The Render build forwards this same value to Vite as `VITE_GOOGLE_CLIENT_ID`; the frontend and Django verifier therefore use one client ID. |
+
+Settings also support `EMAIL_BACKEND`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_USE_SSL`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL`, and `EMAIL_TIMEOUT` for SMTP notifications. Email remains disabled by default using Django's console backend. Set `EMAIL_USE_TLS` or `EMAIL_USE_SSL` according to the SMTP provider, not both. Render Free blocks outbound SMTP ports 465 and 587, so SMTP email delivery is unavailable from this free web service; Render documents that restriction in its [free plan limitations](https://render.com/docs/free#other-limitations).
+
+## Google OAuth client configuration
+
+Set `GOOGLE_CLIENT_ID` once in the Render service's Environment settings to the Google OAuth **Web application** client ID. `render.yaml` marks it `sync: false` so the value is entered outside source control. Render makes service environment variables available during both build and runtime; the build command maps this value to `VITE_GOOGLE_CLIENT_ID` only for `npm run build`. Django reads the original `GOOGLE_CLIENT_ID` at runtime. Do not create or maintain a second client ID value.
+
+The frontend includes the client ID in its JavaScript bundle because Google Identity Services needs it in the browser. A client ID is an identifier, not a client secret; never put a client secret in a `VITE_` variable or frontend code.
+
+In Google Cloud Console, open **APIs & Services → Credentials**, edit the matching Web application OAuth client, and add the deployed site's exact origin under **Authorized JavaScript origins**, for example `https://webwatch.onrender.com` (use the actual hostname shown by Render) and any custom domain such as `https://watch.example.com`. Origins include the scheme and hostname only: do not add a path, trailing slash, or `/api`.
+
+The current flow uses Google Identity Services' browser button callback to return an ID token, which Django verifies at `/api/auth/google/`; account linking uses the same callback flow. It does not use an OAuth redirect or authorization-code callback URL, so no **Authorized redirect URI** is needed for this implementation. If the authentication flow is changed in the future to use redirects, configure the exact callback URI required by that flow then. No Google client secret or live Google service was used for this configuration.
+
+SQLite remains the local-development fallback when MySQL is not selected. A local `backend/db.sqlite3` and its migration history are separate from the external MySQL database; deploying does not copy local application data.
+
+## MySQL/TiDB TLS and compatibility
+
+Django uses `mysqlclient` (`mysqlclient==2.2.7`). Settings pass `DB_SSL_MODE` to its supported MySQL SSL modes (`DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`, `VERIFY_IDENTITY`), and optionally pass CA/client certificate paths through `DB_SSL_CA`, `DB_SSL_CERT`, and `DB_SSL_KEY`. TLS mode defaults to `REQUIRED` in Django settings; the Render Blueprint selects `VERIFY_IDENTITY`. The client cert and key must be configured together. SQLite ignores these MySQL options.
+
+Use the database provider's documented TLS mode and CA bundle. Test connection, certificate verification, schema behavior, and the migration plan against a staging database. MySQL protocol compatibility does not by itself prove every MySQL feature is supported by a TiDB version or plan. This project targets MySQL 8.4.x; validate the exact TiDB service before production use.
+
+## Safe database migration procedure
+
+Migrations are not run by the Render build or start script. No production database has been migrated as part of preparing this project.
+
+1. Identify the target database explicitly and confirm the environment is staging. Never point a local command at production by relying on a developer `.env` file.
+2. Take a provider-supported backup/snapshot before schema changes. Confirm the backup completed and document how to restore it; test restoration to a separate database. For TiDB, follow the provider's export/restore instructions rather than assuming every MySQL dump option is supported.
+3. From the exact release checkout and a secured environment containing the staging DB settings, run `python backend/manage.py showmigrations` and `python backend/manage.py migrate --plan`. Review the plan and release notes.
+4. Apply migrations to staging with `python backend/manage.py migrate --noinput`. Verify table/schema state, application health, and representative data before proceeding.
+5. For a later production release, repeat the backup and review steps against the production target, schedule a maintenance window if needed, and apply migrations once using an authorized operator and secured connection. Do not import SQLite's `django_migrations` table or assume its history applies to MySQL.
+6. Restart/redeploy the application after the migration. Startup's `migrate --check` must pass. Keep the backup until the deployment and data checks are accepted.
+
+The web service's free plan does not provide dashboard shell access or a persistent disk. Plan how an authorized operator will reach the database securely for an explicit migration; do not solve this by putting a migration in every web-service startup.
+
+## Staging acceptance checklist
+
+- Confirm the Blueprint is connected to `SRIVARSHAN35/WEB-WATCH` on `main` and that the deployed commit contains the reviewed changes.
+- Supply staging MySQL/TiDB and Redis credentials, test TLS validation, and apply reviewed migrations only to staging.
+- Confirm build output includes the Vite assets and Chromium. Review startup logs for Gunicorn, Celery worker, and Beat.
+- Verify `/`, a frontend deep link, `/api/`, an unknown `/api/` route, `/healthz/`, and static asset requests.
+- Exercise both public and authenticated website checks on staging and watch memory, browser errors, Redis connectivity, and scheduled task execution.
+- Verify the encryption key and database backups are retained outside the ephemeral service filesystem.
+
+This configuration can be evaluated on staging after those checks. It does not provide a production continuity guarantee at the free-tier budget.

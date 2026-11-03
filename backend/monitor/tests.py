@@ -8,6 +8,7 @@ from unittest import skipUnless
 
 from celery.exceptions import Retry
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password
 from django.core import mail
@@ -26,9 +27,11 @@ from rest_framework.test import APITestCase
 from rest_framework.authtoken.models import Token
 
 from config.celery import app as celery_app
+from config import settings as project_settings
 from .models import AccountActivity, DeletedAccountMarker, DeveloperAuditLog, GoogleIdentity, UserPreference, Website, WebsiteAlert, WebsiteChange, WebsiteCredential, WhatsAppDelivery
 from .notifications import send_change_notification
 from .tasks import (
+	CHROMIUM_LAUNCH_ARGS,
 	check_due_websites,
 	check_website,
 	deliver_change_notification,
@@ -37,6 +40,7 @@ from .tasks import (
 	queue_pending_change_notifications,
 	queue_pending_whatsapp_notifications,
 )
+from .website_login import CHROMIUM_LAUNCH_ARGS as LOGIN_CHROMIUM_LAUNCH_ARGS
 from .url_safety import validate_public_web_url
 from .snapshots import extract_snapshot, validate_ignore_selectors
 from .services.whatsapp import build_message_payload, mask_phone_number, send_message, send_test_message, validate_phone_number
@@ -135,6 +139,45 @@ class CeleryMonitoringScheduleTests(SimpleTestCase):
 		self.assertIn("monitor.tasks.check_due_websites", celery_app.tasks)
 		self.assertIn("monitor.tasks.deliver_whatsapp_notification", celery_app.tasks)
 		self.assertIn("monitor.tasks.queue_pending_whatsapp_notifications", celery_app.tasks)
+
+
+class DeploymentRuntimeConfigurationTests(SimpleTestCase):
+	@patch.dict(
+		os.environ,
+		{
+			"DB_SSL_MODE": "VERIFY_IDENTITY",
+			"DB_SSL_CA": "/run/secrets/db-ca.pem",
+			"DB_SSL_CERT": "/run/secrets/db-client.pem",
+			"DB_SSL_KEY": "/run/secrets/db-client.key",
+		},
+	)
+	def test_mysql_tls_options_are_configurable(self):
+		self.assertEqual(
+			project_settings._mysql_options(),
+			{
+				"connect_timeout": 10,
+				"ssl_mode": "VERIFY_IDENTITY",
+				"ssl": {
+					"ca": "/run/secrets/db-ca.pem",
+					"cert": "/run/secrets/db-client.pem",
+					"key": "/run/secrets/db-client.key",
+				},
+			},
+		)
+
+	@patch.dict(os.environ, {"DB_SSL_MODE": "NOT_A_MODE"})
+	def test_mysql_tls_rejects_unknown_mode(self):
+		with self.assertRaises(ImproperlyConfigured):
+			project_settings._mysql_options()
+
+	@patch.dict(os.environ, {"DB_SSL_CERT": "/run/secrets/db-client.pem", "DB_SSL_KEY": ""})
+	def test_mysql_tls_requires_client_certificate_pair(self):
+		with self.assertRaises(ImproperlyConfigured):
+			project_settings._mysql_options()
+
+	def test_chromium_launch_does_not_force_single_process_mode(self):
+		self.assertNotIn("--single-process", CHROMIUM_LAUNCH_ARGS)
+		self.assertNotIn("--single-process", LOGIN_CHROMIUM_LAUNCH_ARGS)
 
 
 class WebsiteChangesApiTests(APITestCase):
@@ -2974,3 +3017,34 @@ class WebsiteLoginTaskTests(TestCase):
 		self.website.refresh_from_db()
 		self.assertEqual(self.website.status, "error")
 		self.assertEqual(WebsiteChange.objects.count(), 0)
+
+
+class SingleDomainDeploymentTests(TestCase):
+	def test_root_loads_frontend_html(self):
+		response = self.client.get("/")
+		self.assertEqual(response.status_code, 200)
+		self.assertIn("text/html", response["Content-Type"])
+		self.assertIn("WebWatch", response.content.decode("utf-8"))
+
+	def test_client_routes_serve_frontend_on_refresh(self):
+		for route in ("/dashboard", "/websites", "/alerts", "/profile", "/settings", "/history", "/login", "/register"):
+			with self.subTest(route=route):
+				response = self.client.get(route)
+				self.assertEqual(response.status_code, 200)
+				self.assertIn("text/html", response["Content-Type"])
+				self.assertIn("WebWatch", response.content.decode("utf-8"))
+
+	@override_settings(DEBUG=False)
+	def test_api_404_returns_json_not_spa_html(self):
+		response = self.client.get("/api/unknown-endpoint/")
+		self.assertEqual(response.status_code, 404)
+		self.assertIn("application/json", response["Content-Type"])
+
+	def test_healthz_endpoint_remains_available(self):
+		response = self.client.get("/healthz/")
+		self.assertIn(response.status_code, (200, 503))
+		self.assertIn("application/json", response["Content-Type"])
+
+	def test_admin_route_redirects_or_renders_admin_login(self):
+		response = self.client.get("/admin/")
+		self.assertIn(response.status_code, (200, 302))

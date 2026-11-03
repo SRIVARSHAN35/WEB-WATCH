@@ -1,3 +1,4 @@
+import os
 from urllib.parse import urlsplit
 
 from playwright.sync_api import Error as PlaywrightError
@@ -20,6 +21,12 @@ DEFAULT_SELECTORS = {
     "password_selector": {"", 'input[type="password"]'},
     "submit_selector": {"", 'button[type="submit"]'},
 }
+
+CHROMIUM_LAUNCH_ARGS = [
+    "--disable-dev-shm-usage",
+]
+if os.name == "posix" and os.geteuid() == 0:
+    CHROMIUM_LAUNCH_ARGS.append("--no-sandbox")
 
 
 def additional_authentication_required(page):
@@ -364,7 +371,7 @@ def test_website_login(credentials):
     context = None
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(headless=True, args=CHROMIUM_LAUNCH_ARGS)
             context = browser.new_context()
             page = context.new_page()
             page.route("**/*", guard_public_request)

@@ -1,23 +1,8 @@
-"""
-URL configuration for config project.
-
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/6.1/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
-"""
+from django.conf import settings
 from django.contrib import admin
-from django.urls import path, include
-from django.http import JsonResponse
 from django.db import DatabaseError, connection
+from django.http import HttpResponse, JsonResponse
+from django.urls import include, path, re_path
 
 
 def healthz(request):
@@ -29,10 +14,33 @@ def healthz(request):
         return JsonResponse({"status": "unavailable"}, status=503)
     return JsonResponse({"status": "ok"})
 
+
+def serve_spa(request):
+    index_path = getattr(settings, "FRONTEND_INDEX_HTML", None)
+    if index_path and index_path.is_file():
+        return HttpResponse(index_path.read_text(encoding="utf-8"), content_type="text/html")
+    return HttpResponse(
+        "<!doctype html><html><head><title>WebWatch</title></head><body>"
+        "<h1>WebWatch</h1><p>Frontend production build not found. Run <code>npm run build</code> in the frontend directory.</p>"
+        "</body></html>",
+        status=503,
+        content_type="text/html",
+    )
+
+
+def custom_404_view(request, exception=None):
+    if request.path.startswith("/api/"):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    return serve_spa(request)
+
+
+handler404 = "config.urls.custom_404_view"
+
 urlpatterns = [
     path("healthz/", healthz, name="healthz"),
-    path('admin/', admin.site.urls),
+    path("admin/", admin.site.urls),
     path("api/auth/", include("monitor.auth_urls")),
     path("api/developer/", include("monitor.developer_urls")),
     path("api/", include("monitor.urls")),
+    re_path(r"^(?!api/|admin/|healthz/).*$", serve_spa, name="spa"),
 ]

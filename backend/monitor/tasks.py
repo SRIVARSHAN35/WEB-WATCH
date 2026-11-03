@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import socket
 from contextlib import contextmanager
 from datetime import timedelta
@@ -29,6 +30,11 @@ CHECK_CLAIM_STALE_AFTER = timedelta(minutes=15)
 CHANGE_VALUE_MAX_LENGTH = 5000
 NOTIFICATION_CLAIM_TIMEOUT = timedelta(minutes=10)
 SENSITIVE_FIELD_MARKERS = ("password", "token", "cookie", "session", "secret", "authorization")
+CHROMIUM_LAUNCH_ARGS = [
+    "--disable-dev-shm-usage",
+]
+if os.name == "posix" and os.geteuid() == 0:
+    CHROMIUM_LAUNCH_ARGS.append("--no-sandbox")
 
 
 class MonitoringElementNotFound(Exception):
@@ -275,7 +281,7 @@ def check_website(website_id):
         login_was_expired = False
 
         with _account_deletion_watch(owner_id) as account_cancelled, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=CHROMIUM_LAUNCH_ARGS)
             context = None
             try:
                 if authenticated_check:

@@ -95,6 +95,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     "corsheaders.middleware.CorsMiddleware",
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -130,6 +131,42 @@ DB_ENGINE = os.environ.get(
     "DB_ENGINE",
     "django.db.backends.mysql" if os.environ.get("DB_HOST") else "django.db.backends.sqlite3",
 )
+
+
+def _mysql_options():
+    """Build mysqlclient options without embedding provider secrets or certs."""
+    options = {
+        "connect_timeout": int(os.environ.get("DB_CONNECT_TIMEOUT", "10")),
+        "ssl_mode": os.environ.get("DB_SSL_MODE", "REQUIRED").strip().upper(),
+    }
+    allowed_ssl_modes = {
+        "DISABLED",
+        "PREFERRED",
+        "REQUIRED",
+        "VERIFY_CA",
+        "VERIFY_IDENTITY",
+    }
+    if options["ssl_mode"] not in allowed_ssl_modes:
+        raise ImproperlyConfigured(
+            "DB_SSL_MODE must be one of: " + ", ".join(sorted(allowed_ssl_modes))
+        )
+
+    ssl_options = {
+        option: os.environ[env_name].strip()
+        for option, env_name in (
+            ("ca", "DB_SSL_CA"),
+            ("cert", "DB_SSL_CERT"),
+            ("key", "DB_SSL_KEY"),
+        )
+        if os.environ.get(env_name, "").strip()
+    }
+    if bool(ssl_options.get("cert")) != bool(ssl_options.get("key")):
+        raise ImproperlyConfigured("Set both DB_SSL_CERT and DB_SSL_KEY for client certificates.")
+    if ssl_options:
+        options["ssl"] = ssl_options
+    return options
+
+
 DATABASES = {
     "default": {
         "ENGINE": DB_ENGINE,
@@ -146,6 +183,8 @@ DATABASES = {
         **(
             {"OPTIONS": {"timeout": int(os.environ.get("SQLITE_TIMEOUT", "30"))}}
             if DB_ENGINE == "django.db.backends.sqlite3"
+            else {"OPTIONS": _mysql_options()}
+            if DB_ENGINE == "django.db.backends.mysql"
             else {}
         ),
     }
@@ -185,7 +224,26 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
+FRONTEND_DIST_DIR = BASE_DIR.parent / "frontend" / "dist"
+FRONTEND_INDEX_HTML = FRONTEND_DIST_DIR / "index.html"
+
 STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STATIC_ROOT.mkdir(parents=True, exist_ok=True)
+
+STATICFILES_DIRS = [
+    FRONTEND_DIST_DIR,
+] if FRONTEND_DIST_DIR.is_dir() else []
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
+    },
+}
+WHITENOISE_ROOT = str(FRONTEND_DIST_DIR) if FRONTEND_DIST_DIR.is_dir() else None
 
 
 # Email

@@ -24,6 +24,7 @@ venv/
 venv*/
 backend/celerybeat-schedule*
 media/
+staticfiles/
 
 # Node and Vite
 node_modules/
