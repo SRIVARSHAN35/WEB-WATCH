@@ -4,3 +4,30 @@
 credentials.json
 client_secret*.json
 gmail_token.json
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Node.js
+node_modules/
+dist/
+
+# Django generated files
+staticfiles/
+
+# Logs
+*.log
+
+# Playwright
+test-results/
+playwright-report/
+
+# IDE
+.vscode/
+
+# Database backups
+*.sql
+*.sqlite3
