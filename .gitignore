@@ -41,3 +41,6 @@ pnpm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local TiDB virtual environment
+backend/.venv-tidb/

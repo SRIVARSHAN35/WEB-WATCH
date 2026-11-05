@@ -131,6 +131,10 @@ DB_ENGINE = os.environ.get(
     "DB_ENGINE",
     "django.db.backends.mysql" if os.environ.get("DB_HOST") else "django.db.backends.sqlite3",
 )
+MYSQL_COMPATIBLE_ENGINES = {
+    "django.db.backends.mysql",
+    "django_tidb",
+}
 
 
 def _mysql_options():
@@ -184,7 +188,7 @@ DATABASES = {
             {"OPTIONS": {"timeout": int(os.environ.get("SQLITE_TIMEOUT", "30"))}}
             if DB_ENGINE == "django.db.backends.sqlite3"
             else {"OPTIONS": _mysql_options()}
-            if DB_ENGINE == "django.db.backends.mysql"
+            if DB_ENGINE in MYSQL_COMPATIBLE_ENGINES
             else {}
         ),
     }
